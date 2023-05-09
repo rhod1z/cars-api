@@ -1,0 +1,93 @@
+variables:
+  ARTIFACT_NAME: cars-api-v$CI_PIPELINE_IID.jar
+  APP_NAME: cars-api
+
+stages:
+  - build
+  - test
+  - deploy
+  - post deploy
+
+build:
+  stage: build
+  image: openjdk:12-alpine
+  script:
+    - sed -i "s/CI_PIPELINE_IID/$CI_PIPELINE_IID/" ./src/main/resources/application.yml
+    - sed -i "s/CI_COMMIT_SHORT_SHA/$CI_COMMIT_SHORT_SHA/" ./src/main/resources/application.yml
+    - sed -i "s/CI_COMMIT_BRANCH/$CI_COMMIT_BRANCH/" ./src/main/resources/application.yml
+    - chmod +x ./gradlew
+    - ./gradlew build
+    - mv ./build/libs/cars-api.jar ./build/libs/$ARTIFACT_NAME
+  artifacts:
+    paths:
+      - ./build/libs/
+
+smoke test:
+  stage: test
+  image: openjdk:12-alpine
+  before_script:
+   - apk --no-cache add curl
+  script:
+    - java -jar ./build/libs/$ARTIFACT_NAME & # & means to run java application in the background.
+    - sleep 30
+    - curl http://localhost:5000/actuator/health | grep "UP"
+
+code quality:
+  stage: test
+  image: openjdk:12-alpine
+  script:
+    - chmod +x ./gradlew
+    - ./gradlew pmdMain pmdTest
+  artifacts:
+    when: always # ensures artifact is saved even if the job fails.
+    paths:
+      - ./build/reports/pmd
+
+unit tests:
+  stage: test
+  image: openjdk:12-alpine
+  script:
+    - chmod +x ./gradlew
+    - ./gradlew test
+  artifacts:
+    when: always
+    paths:
+      - ./build/reports/tests
+    reports:
+      junit: build/test-results/test/*.xml
+
+# Pre-Requisites
+# AWS Resources: Create S3 bucket, Elastic Beanstalk Application & IAM User (AmazonS3FullAccess, AdministratorAccess-AWSElasticBeanstalk).
+# GitLab Variables:  S3_BUCKET (bucket name), AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (from IAM user).
+deploy:
+  stage: deploy
+  image:
+    name: amazon/aws-cli
+    entrypoint: [""] # Override enytry point to specify no entry point for the image.
+  before_script:
+    - yum install -y jq # Install jq to help parse the yaml output.
+  script:
+    - aws configure set region us-east-1
+    - aws s3 cp ./build/libs/$ARTIFACT_NAME s3://$S3_BUCKET/$ARTIFACT_NAME
+    - aws elasticbeanstalk create-application-version --application-name $APP_NAME --version-label $CI_PIPELINE_IID --source-bundle S3Bucket=$S3_BUCKET,S3Key=$ARTIFACT_NAME
+    - CNAME=$(aws elasticbeanstalk update-environment --application-name $APP_NAME --environment-name "production" --version-label=$CI_PIPELINE_IID | jq '.CNAME' --raw-output)
+    - sleep 45 # Wait for deployment to complete.
+    - curl http://$CNAME/actuator/info | grep $CI_PIPELINE_IID
+    - curl http://$CNAME/actuator/health | grep "UP"
+
+api testing:
+  stage: post deploy
+  image:
+    name: postman/newman
+    entrypoint: [""]
+  before_script:
+    - npm install -g newman newman-reporter-htmlextra
+  script:
+    - newman --version
+    - newman run "./postman/Cars API.postman_collection.json" --reporters cli,htmlextra,junit --reporter-htmlextra-export "./newman/report.html" --reporter-junit-export "./newman/report.xml"
+  artifacts:
+    when: always
+    paths:
+      - ./newman
+    reports:
+      junit: ./newman/report.xml
