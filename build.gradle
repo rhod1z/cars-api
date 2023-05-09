@@ -39,8 +39,8 @@ pmd {
 
 sonarqube {
   properties {
-    property "sonar.projectKey", "projectKey-cars-api"
-    property "sonar.organization", "organization-hmcts"
+    property "sonar.projectKey", "proj-cars-api"
+    property "sonar.organization", "rhod3rz"
     property "sonar.host.url", "https://sonarcloud.io"
   }
 }
